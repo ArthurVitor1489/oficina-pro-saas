@@ -14,7 +14,10 @@ export interface LogAuditParams {
     | "LOGOUT"
     | "STOCK_MOVE"
     | "PERMISSION_CHANGE"
-    | "PAYMENT";
+    | "PAYMENT"
+    | "UPLOAD_FILE"
+    | "NFE_IMPORT"
+    | "CANCEL";
   entity: string; // companies, users, customers, vehicles, work_orders, quotes, products, finance
   entityId?: string | null;
   oldData?: any;

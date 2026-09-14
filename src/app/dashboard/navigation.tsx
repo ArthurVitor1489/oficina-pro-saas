@@ -20,6 +20,7 @@ import {
   History,
   Building,
   Truck,
+  BarChart3,
 } from "lucide-react";
 import { RoleBadge } from "@/components/ui/Badge";
 import { logoutAction } from "@/features/auth/actions";
@@ -100,6 +101,12 @@ export function DashboardNavigation({ user, company, children }: NavigationProps
       label: "Financeiro",
       href: "/dashboard/finance",
       icon: DollarSign,
+      show: canSeeFinance,
+    },
+    {
+      label: "Relatórios & DRE",
+      href: "/dashboard/reports",
+      icon: BarChart3,
       show: canSeeFinance,
     },
     {

@@ -1,33 +1,62 @@
 import React from "react";
+import Link from "next/link";
 import { requireTenantPermission } from "@/lib/server/tenant-context";
 import { db } from "@/db";
 import { financialTransactions } from "@/db/schema/finance";
 import { eq, desc, and } from "drizzle-orm";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { Badge, StatusBadge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
-import { DollarSign, ArrowDownLeft, ArrowUpRight, PlusCircle, Wallet } from "lucide-react";
+import { DollarSign, ArrowDownLeft, ArrowUpRight, Wallet, Filter } from "lucide-react";
+import { TransactionModal } from "./transaction-modal";
+import { TransactionRowActions } from "./transaction-row-actions";
 
-export default async function FinancePage() {
+interface FinancePageProps {
+  searchParams: Promise<{
+    type?: string;
+    status?: string;
+  }>;
+}
+
+export default async function FinancePage({ searchParams }: FinancePageProps) {
   const { companyId } = await requireTenantPermission("view:finance");
+  const resolvedSearchParams = await searchParams;
+  const filterType = resolvedSearchParams.type;
+  const filterStatus = resolvedSearchParams.status;
 
-  const transactions = await db
+  const allTransactions = await db
     .select()
     .from(financialTransactions)
     .where(eq(financialTransactions.companyId, companyId))
     .orderBy(desc(financialTransactions.dueDate))
-    .limit(30);
+    .limit(100);
 
-  // Totais
+  // Totais globais da empresa
   let totalReceivableCents = 0;
   let totalPayableCents = 0;
+  let pendingReceivableCents = 0;
+  let pendingPayableCents = 0;
 
-  transactions.forEach((t) => {
-    if (t.type === "RECEIVABLE" && t.status !== "CANCELED") {
-      totalReceivableCents += t.amountCents;
-    } else if (t.type === "PAYABLE" && t.status !== "CANCELED") {
-      totalPayableCents += t.amountCents;
+  allTransactions.forEach((t) => {
+    if (t.status !== "CANCELED") {
+      if (t.type === "RECEIVABLE") {
+        totalReceivableCents += t.amountCents;
+        if (t.status === "PENDING" || t.status === "OVERDUE") {
+          pendingReceivableCents += t.amountCents;
+        }
+      } else if (t.type === "PAYABLE") {
+        totalPayableCents += t.amountCents;
+        if (t.status === "PENDING" || t.status === "OVERDUE") {
+          pendingPayableCents += t.amountCents;
+        }
+      }
     }
+  });
+
+  // Filtragem
+  const filteredTransactions = allTransactions.filter((t) => {
+    if (filterType && t.type !== filterType) return false;
+    if (filterStatus && t.status !== filterStatus) return false;
+    return true;
   });
 
   return (
@@ -43,82 +72,142 @@ export default async function FinancePage() {
           </p>
         </div>
 
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" leftIcon={<ArrowUpRight className="w-4 h-4 text-rose-500" />}>
-            Nova Despesa
-          </Button>
-          <Button variant="primary" size="sm" leftIcon={<ArrowDownLeft className="w-4 h-4 text-white" />}>
-            Nova Receita
-          </Button>
-        </div>
+        <TransactionModal />
       </div>
 
-      {/* Cards Financeiros */}
+      {/* Indicadores Financeiros */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Card padding="sm" className="bg-emerald-50/50 border-emerald-200">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-emerald-800 uppercase">A Receber</span>
+            <span className="text-xs font-bold text-emerald-800 uppercase tracking-wider">A Receber Pendente</span>
             <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center">
               <ArrowDownLeft className="w-4 h-4" />
             </div>
           </div>
           <div className="mt-2">
             <span className="text-2xl sm:text-3xl font-black text-emerald-900">
-              {(totalReceivableCents / 100).toLocaleString("pt-BR", {
+              {(pendingReceivableCents / 100).toLocaleString("pt-BR", {
                 style: "currency",
                 currency: "BRL",
               })}
             </span>
           </div>
+          <div className="mt-1 text-[11px] text-emerald-700">
+            Total histórico: {(totalReceivableCents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+          </div>
         </Card>
 
         <Card padding="sm" className="bg-rose-50/50 border-rose-200">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-rose-800 uppercase">A Pagar</span>
+            <span className="text-xs font-bold text-rose-800 uppercase tracking-wider">A Pagar Pendente</span>
             <div className="w-8 h-8 rounded-lg bg-rose-100 text-rose-700 flex items-center justify-center">
               <ArrowUpRight className="w-4 h-4" />
             </div>
           </div>
           <div className="mt-2">
             <span className="text-2xl sm:text-3xl font-black text-rose-900">
-              {(totalPayableCents / 100).toLocaleString("pt-BR", {
+              {(pendingPayableCents / 100).toLocaleString("pt-BR", {
                 style: "currency",
                 currency: "BRL",
               })}
             </span>
           </div>
+          <div className="mt-1 text-[11px] text-rose-700">
+            Total histórico: {(totalPayableCents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+          </div>
         </Card>
 
         <Card padding="sm" className="bg-sky-50/50 border-sky-200">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-sky-800 uppercase">Saldo Previsto</span>
+            <span className="text-xs font-bold text-sky-800 uppercase tracking-wider">Saldo Líquido Previsto</span>
             <div className="w-8 h-8 rounded-lg bg-sky-100 text-sky-700 flex items-center justify-center">
               <Wallet className="w-4 h-4" />
             </div>
           </div>
           <div className="mt-2">
             <span className="text-2xl sm:text-3xl font-black text-sky-900">
-              {((totalReceivableCents - totalPayableCents) / 100).toLocaleString("pt-BR", {
+              {((pendingReceivableCents - pendingPayableCents) / 100).toLocaleString("pt-BR", {
                 style: "currency",
                 currency: "BRL",
               })}
             </span>
           </div>
+          <div className="mt-1 text-[11px] text-sky-700">
+            Recebíveis pendentes menos contas a pagar
+          </div>
         </Card>
       </div>
 
+      {/* Filtros e Tabela */}
       <Card padding="none">
-        <div className="p-4 sm:p-6 border-b border-slate-100">
+        <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3">
           <CardHeader
             title="Lançamentos Financeiros"
-            subtitle="Histórico de receitas e despesas"
+            subtitle={`Exibindo ${filteredTransactions.length} títulos`}
             className="mb-0"
           />
+
+          {/* Quick Filters */}
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <span className="text-slate-400 mr-1 flex items-center gap-1">
+              <Filter className="w-3.5 h-3.5" /> Filtros:
+            </span>
+            <Link
+              href="/dashboard/finance"
+              className={`px-2.5 py-1 rounded-md font-semibold transition-colors ${
+                !filterType && !filterStatus
+                  ? "bg-sky-600 text-white"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+            >
+              Todos
+            </Link>
+            <Link
+              href="/dashboard/finance?type=RECEIVABLE"
+              className={`px-2.5 py-1 rounded-md font-semibold transition-colors ${
+                filterType === "RECEIVABLE"
+                  ? "bg-emerald-600 text-white"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+            >
+              Receitas
+            </Link>
+            <Link
+              href="/dashboard/finance?type=PAYABLE"
+              className={`px-2.5 py-1 rounded-md font-semibold transition-colors ${
+                filterType === "PAYABLE"
+                  ? "bg-rose-600 text-white"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+            >
+              Despesas
+            </Link>
+            <Link
+              href="/dashboard/finance?status=PENDING"
+              className={`px-2.5 py-1 rounded-md font-semibold transition-colors ${
+                filterStatus === "PENDING"
+                  ? "bg-amber-500 text-white"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+            >
+              Pendentes
+            </Link>
+            <Link
+              href="/dashboard/finance?status=PAID"
+              className={`px-2.5 py-1 rounded-md font-semibold transition-colors ${
+                filterStatus === "PAID"
+                  ? "bg-emerald-600 text-white"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+            >
+              Quitados
+            </Link>
+          </div>
         </div>
 
-        {transactions.length === 0 ? (
+        {filteredTransactions.length === 0 ? (
           <div className="p-8 text-center text-slate-500 text-sm">
-            Nenhuma transação financeira registrada no momento.
+            Nenhum lançamento financeiro encontrado com os filtros selecionados.
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -128,15 +217,22 @@ export default async function FinancePage() {
                   <th className="py-3 px-4 sm:px-6">Vencimento</th>
                   <th className="py-3 px-4 sm:px-6">Tipo</th>
                   <th className="py-3 px-4 sm:px-6">Descrição / Categoria</th>
+                  <th className="py-3 px-4 sm:px-6">Forma</th>
                   <th className="py-3 px-4 sm:px-6">Status</th>
                   <th className="py-3 px-4 sm:px-6 text-right">Valor</th>
+                  <th className="py-3 px-4 sm:px-6 text-right">Ação</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {transactions.map((t) => (
+                {filteredTransactions.map((t) => (
                   <tr key={t.id} className="hover:bg-slate-50/60 transition-colors">
                     <td className="py-3.5 px-4 sm:px-6 text-slate-600 font-mono text-xs">
-                      {new Date(t.dueDate).toLocaleDateString("pt-BR")}
+                      <div>{new Date(t.dueDate).toLocaleDateString("pt-BR")}</div>
+                      {t.paidAt && (
+                        <div className="text-[10px] text-emerald-600">
+                          Pago: {new Date(t.paidAt).toLocaleDateString("pt-BR")}
+                        </div>
+                      )}
                     </td>
                     <td className="py-3.5 px-4 sm:px-6">
                       {t.type === "RECEIVABLE" ? (
@@ -147,7 +243,17 @@ export default async function FinancePage() {
                     </td>
                     <td className="py-3.5 px-4 sm:px-6">
                       <p className="font-semibold text-slate-900">{t.description}</p>
-                      <p className="text-[11px] text-slate-400">{t.category}</p>
+                      <div className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                        <span>{t.category}</span>
+                        {t.referenceType !== "MANUAL" && (
+                          <span className="text-[10px] bg-slate-100 px-1 py-0.2 rounded text-slate-500">
+                            Ref: {t.referenceType}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="py-3.5 px-4 sm:px-6 text-slate-600 text-xs">
+                      {t.paymentMethod || "Não informado"}
                     </td>
                     <td className="py-3.5 px-4 sm:px-6">
                       <StatusBadge status={t.status} />
@@ -161,6 +267,18 @@ export default async function FinancePage() {
                         style: "currency",
                         currency: "BRL",
                       })}
+                    </td>
+                    <td className="py-3.5 px-4 sm:px-6 text-right">
+                      <TransactionRowActions
+                        transaction={{
+                          id: t.id,
+                          description: t.description,
+                          type: t.type,
+                          status: t.status,
+                          amountCents: t.amountCents,
+                          paymentMethod: t.paymentMethod,
+                        }}
+                      />
                     </td>
                   </tr>
                 ))}

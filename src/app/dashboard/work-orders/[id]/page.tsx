@@ -9,9 +9,11 @@ import { vehicles } from "@/db/schema/vehicles";
 import { users } from "@/db/schema/users";
 import { services } from "@/db/schema/services";
 import { products } from "@/db/schema/products";
-import { eq, and } from "drizzle-orm";
+import { attachments } from "@/db/schema/attachments";
+import { eq, and, desc } from "drizzle-orm";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { StatusBadge, Badge, RoleBadge } from "@/components/ui/Badge";
+import { AttachmentSection } from "@/components/attachments/attachment-section";
 import {
   ArrowLeft,
   Wrench,
@@ -75,8 +77,8 @@ export default async function WorkOrderDetailPage({ params }: WorkOrderDetailPag
 
   const order = orderList[0];
 
-  // Buscar itens da OS e catálogos para o modal
-  const [items, catalogServices, catalogProducts] = await Promise.all([
+  // Buscar itens da OS, catálogos para o modal e anexos
+  const [items, catalogServices, catalogProducts, orderAttachments] = await Promise.all([
     db
       .select()
       .from(workOrderItems)
@@ -101,6 +103,18 @@ export default async function WorkOrderDetailPage({ params }: WorkOrderDetailPag
       })
       .from(products)
       .where(eq(products.companyId, companyId)),
+
+    db
+      .select()
+      .from(attachments)
+      .where(
+        and(
+          eq(attachments.companyId, companyId),
+          eq(attachments.entityType, "WORK_ORDER"),
+          eq(attachments.entityId, id)
+        )
+      )
+      .orderBy(desc(attachments.createdAt)),
   ]);
 
   const totalFormatted = (order.totalCents / 100).toLocaleString("pt-BR", {
@@ -357,6 +371,14 @@ export default async function WorkOrderDetailPage({ params }: WorkOrderDetailPag
           </div>
         </div>
       </Card>
+
+      {/* Checklist, Fotos e Laudos da OS */}
+      <AttachmentSection
+        entityType="WORK_ORDER"
+        entityId={order.id}
+        initialAttachments={orderAttachments}
+        title="Checklist Visual, Fotos da OS & Laudos Técnicos"
+      />
     </div>
   );
 }

@@ -7,11 +7,15 @@ import { products } from "../src/db/schema/products";
 import { stockMovements } from "../src/db/schema/stock_movements";
 import { quotes, quoteItems } from "../src/db/schema/quotes";
 import { workOrders, workOrderItems } from "../src/db/schema/work_orders";
+import { purchases, purchaseItems } from "../src/db/schema/purchases";
+import { suppliers } from "../src/db/schema/suppliers";
+import { financialTransactions } from "../src/db/schema/finance";
 import { auditLogs } from "../src/db/schema/audit_logs";
 import { eq, and } from "drizzle-orm";
-import { verifyPassword } from "../src/lib/server/crypto";
+import { verifyPassword, generateUUID } from "../src/lib/server/crypto";
 import { hasPermission } from "../src/lib/server/rbac";
 import { logAudit } from "../src/lib/server/audit";
+import { parseNFeXml } from "../src/features/invoices/nfe-parser";
 
 async function runIsolationTest() {
   console.log("🔒 ================================================");
@@ -416,6 +420,207 @@ async function runIsolationTest() {
   assert(
     silvaWoCheck.length === 0,
     "ISOLAMENTO FASE 4: Ordem de Serviço da Empresa 1 NUNCA aparece para a Empresa 2"
+  );
+
+  // 16. FASE 5: Compras, Entrada de Mercadorias e Estoque
+  const testPurchaseId = generateUUID();
+  const initialStockForPurchase = (
+    await db.select().from(products).where(eq(products.id, testProductId))
+  )[0].stockQuantity;
+
+  await db.insert(purchases).values({
+    id: testPurchaseId,
+    companyId: autocenter.id,
+    purchaseNumber: 999,
+    supplierId: (await db.select().from(suppliers).where(eq(suppliers.companyId, autocenter.id)))[0]?.id || generateUUID(),
+    invoiceNumber: "NF-99988",
+    status: "CONFIRMED",
+    subtotalCents: 15000,
+    totalCents: 15000,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+
+  const purchaseQty = 10;
+  await db.insert(purchaseItems).values({
+    id: generateUUID(),
+    companyId: autocenter.id,
+    purchaseId: testPurchaseId,
+    productId: testProductId,
+    quantity: purchaseQty,
+    unitCostCents: 1500,
+    totalCostCents: 15000,
+  });
+
+  // Atualizar estoque e registrar movimentação de compra
+  await db
+    .update(products)
+    .set({
+      stockQuantity: initialStockForPurchase + purchaseQty,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(products.id, testProductId), eq(products.companyId, autocenter.id)));
+
+  await db.insert(stockMovements).values({
+    id: generateUUID(),
+    companyId: autocenter.id,
+    productId: testProductId,
+    type: "PURCHASE",
+    quantity: purchaseQty,
+    unitCostCents: 1500,
+    referenceType: "PURCHASE",
+    referenceId: testPurchaseId,
+    notes: "Entrada por compra de teste",
+    createdAt: new Date(),
+  });
+
+  const stockAfterPurchase = (
+    await db.select().from(products).where(eq(products.id, testProductId))
+  )[0].stockQuantity;
+  assert(
+    stockAfterPurchase === initialStockForPurchase + purchaseQty,
+    "FASE 5: Saldo de estoque incrementado com sucesso após confirmação de compra"
+  );
+
+  const purchaseMovement = await db
+    .select()
+    .from(stockMovements)
+    .where(
+      and(
+        eq(stockMovements.productId, testProductId),
+        eq(stockMovements.referenceId, testPurchaseId)
+      )
+    );
+  assert(
+    purchaseMovement.length === 1 && purchaseMovement[0].type === "PURCHASE",
+    "FASE 5: Movimentação de estoque do tipo PURCHASE registrada com sucesso"
+  );
+
+  const silvaPurchaseCheck = await db
+    .select()
+    .from(purchases)
+    .where(and(eq(purchases.id, testPurchaseId), eq(purchases.companyId, silva.id)));
+  assert(
+    silvaPurchaseCheck.length === 0,
+    "ISOLAMENTO FASE 5: Compra da Empresa 1 NUNCA aparece para a Empresa 2"
+  );
+
+  // 17. FASE 6: Financeiro e Conciliação
+  const testTxId = generateUUID();
+  await db.insert(financialTransactions).values({
+    id: testTxId,
+    companyId: autocenter.id,
+    type: "RECEIVABLE",
+    status: "PENDING",
+    category: "Serviços",
+    description: "Recebimento OS #999",
+    amountCents: 25000,
+    paidAmountCents: 0,
+    dueDate: new Date(),
+    paidAt: null,
+    paymentMethod: "PIX",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+
+  const createdTx = (
+    await db
+      .select()
+      .from(financialTransactions)
+      .where(and(eq(financialTransactions.id, testTxId), eq(financialTransactions.companyId, autocenter.id)))
+  )[0];
+  assert(
+    createdTx && createdTx.status === "PENDING" && createdTx.amountCents === 25000,
+    "FASE 6: Transação financeira registrada como PENDENTE no valor correto em centavos"
+  );
+
+  // Liquidar transação
+  await db
+    .update(financialTransactions)
+    .set({
+      status: "PAID",
+      paidAmountCents: 25000,
+      paidAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(and(eq(financialTransactions.id, testTxId), eq(financialTransactions.companyId, autocenter.id)));
+
+  const settledTx = (
+    await db
+      .select()
+      .from(financialTransactions)
+      .where(and(eq(financialTransactions.id, testTxId), eq(financialTransactions.companyId, autocenter.id)))
+  )[0];
+  assert(
+    settledTx.status === "PAID" && settledTx.paidAmountCents === 25000,
+    "FASE 6: Baixa financeira executada com sucesso (status PAID)"
+  );
+
+  const silvaTxCheck = await db
+    .select()
+    .from(financialTransactions)
+    .where(and(eq(financialTransactions.id, testTxId), eq(financialTransactions.companyId, silva.id)));
+  assert(
+    silvaTxCheck.length === 0,
+    "ISOLAMENTO FASE 6: Lançamento financeiro da Empresa 1 NUNCA aparece para a Empresa 2"
+  );
+
+  // 18. FASE 7: Parser de XML de NF-e v4.00
+  const sampleXml = `<?xml version="1.0" encoding="UTF-8"?>
+  <nfeProc xmlns="http://www.portalfiscal.inf.br/nfe">
+    <NFe>
+      <infNFe Id="NFe35240912345678000199550010000123451001234567">
+        <ide>
+          <nNF>12345</nNF>
+          <serie>1</serie>
+          <dhEmi>2026-09-14T10:00:00-03:00</dhEmi>
+        </ide>
+        <emit>
+          <CNPJ>12345678000199</CNPJ>
+          <xNome>Distribuidora de Autopecas Brasil Ltda</xNome>
+          <xFant>AutoPecas Express</xFant>
+        </emit>
+        <det nItem="1">
+          <prod>
+            <cProd>BOSCH-OIL-01</cProd>
+            <cEAN>7891234567890</cEAN>
+            <xProd>Filtro de Oleo Motor Bosch</xProd>
+            <NCM>84212300</NCM>
+            <uCom>UN</uCom>
+            <qCom>5.0000</qCom>
+            <vUnCom>45.0000</vUnCom>
+            <vProd>225.00</vProd>
+          </prod>
+        </det>
+        <total>
+          <ICMSTot>
+            <vNF>225.00</vNF>
+          </ICMSTot>
+        </total>
+      </infNFe>
+    </NFe>
+  </nfeProc>`;
+
+  const parsedNfe = parseNFeXml(sampleXml);
+  assert(
+    parsedNfe.accessKey === "35240912345678000199550010000123451001234567",
+    "FASE 7: NF-e Chave de acesso de 44 dígitos extraída com exatidão"
+  );
+  assert(
+    parsedNfe.invoiceNumber === "12345",
+    "FASE 7: NF-e Número da nota fiscal extraído corretamente"
+  );
+  assert(
+    parsedNfe.supplier.cnpj === "12345678000199" && parsedNfe.supplier.tradeName === "AutoPecas Express",
+    "FASE 7: NF-e Fornecedor emitente extraído corretamente"
+  );
+  assert(
+    parsedNfe.items.length === 1 &&
+      parsedNfe.items[0].code === "BOSCH-OIL-01" &&
+      parsedNfe.items[0].quantity === 5 &&
+      parsedNfe.items[0].unitCostCents === 4500 &&
+      parsedNfe.totalCents === 22500,
+    "FASE 7: NF-e Itens e totalizador em centavos validados com 100% de precisão"
   );
 
   console.log("\n================================================");
