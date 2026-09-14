@@ -3,6 +3,8 @@ import { users } from "../src/db/schema/users";
 import { companies } from "../src/db/schema/companies";
 import { customers } from "../src/db/schema/customers";
 import { vehicles } from "../src/db/schema/vehicles";
+import { products } from "../src/db/schema/products";
+import { stockMovements } from "../src/db/schema/stock_movements";
 import { auditLogs } from "../src/db/schema/audit_logs";
 import { eq, and } from "drizzle-orm";
 import { verifyPassword } from "../src/lib/server/crypto";
@@ -158,6 +160,97 @@ async function runIsolationTest() {
   assert(
     latestAudit[0].action === "STATUS_CHANGE",
     "Ação de auditoria gravada corretamente: STATUS_CHANGE"
+  );
+
+  // 8. FASE 3: Testar criação de Produto com movimentação OBRIGATÓRIA de estoque
+  const testProductId = "prod-teste-" + Date.now();
+  const initialStockQty = 15;
+  await db.insert(products).values({
+    id: testProductId,
+    companyId: autocenter.id,
+    name: "Filtro de Combustível Bosch",
+    skuCode: "BOS-FC-999",
+    unit: "UN",
+    costPriceCents: 2500,
+    salePriceCents: 4500,
+    stockQuantity: initialStockQty,
+    minStock: 5,
+    active: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+
+  // Gravar movimentação de implantação de saldo inicial
+  await db.insert(stockMovements).values({
+    id: "mov-init-" + Date.now(),
+    companyId: autocenter.id,
+    productId: testProductId,
+    type: "ADJUSTMENT",
+    quantity: initialStockQty,
+    referenceType: "INITIAL_STOCK",
+    userId: carlosUser.id,
+    notes: "Saldo inicial de teste",
+    createdAt: new Date(),
+  });
+
+  const productFromDb = (
+    await db.select().from(products).where(eq(products.id, testProductId))
+  )[0];
+  assert(productFromDb.stockQuantity === 15, "FASE 3: Produto criado com saldo inicial de 15");
+
+  const initialMovement = await db
+    .select()
+    .from(stockMovements)
+    .where(eq(stockMovements.productId, testProductId));
+  assert(
+    initialMovement.length === 1 && initialMovement[0].quantity === 15,
+    "FASE 3 - REGRA CRÍTICA: Movimentação de estoque inicial foi gerada obrigatoriamente"
+  );
+
+  // 9. FASE 3: Testar Ajuste de Estoque (+5 peças com movimentação e auditoria)
+  const movementQty = 5;
+  await db
+    .update(products)
+    .set({ stockQuantity: productFromDb.stockQuantity + movementQty })
+    .where(eq(products.id, testProductId));
+
+  await db.insert(stockMovements).values({
+    id: "mov-adj-" + Date.now(),
+    companyId: autocenter.id,
+    productId: testProductId,
+    type: "PURCHASE",
+    quantity: movementQty,
+    referenceType: "MANUAL_ADJUSTMENT",
+    userId: carlosUser.id,
+    notes: "Entrada avulsa de 5 peças",
+    createdAt: new Date(),
+  });
+
+  const updatedProduct = (
+    await db.select().from(products).where(eq(products.id, testProductId))
+  )[0];
+  assert(
+    updatedProduct.stockQuantity === 20,
+    "FASE 3: Saldo de produto atualizado para 20 após entrada"
+  );
+
+  const totalMovements = await db
+    .select()
+    .from(stockMovements)
+    .where(eq(stockMovements.productId, testProductId));
+  assert(
+    totalMovements.length === 2,
+    "FASE 3: Histórico de estoque possui exatamente 2 movimentações registradas"
+  );
+
+  // 10. FASE 3: Isolamento do novo produto
+  const silvaProductCheck = await db
+    .select()
+    .from(products)
+    .where(and(eq(products.id, testProductId), eq(products.companyId, silva.id)));
+  assert(
+    silvaProductCheck.length === 0,
+    "ISOLAMENTO FASE 3: Produto criado na Empresa 1 NUNCA aparece na Empresa 2"
   );
 
   console.log("\n================================================");

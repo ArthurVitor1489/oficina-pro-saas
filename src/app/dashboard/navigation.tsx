@@ -19,6 +19,7 @@ import {
   ShoppingBag,
   History,
   Building,
+  Truck,
 } from "lucide-react";
 import { RoleBadge } from "@/components/ui/Badge";
 import { logoutAction } from "@/features/auth/actions";
@@ -87,6 +88,12 @@ export function DashboardNavigation({ user, company, children }: NavigationProps
       label: "Compras",
       href: "/dashboard/purchases",
       icon: ShoppingBag,
+      show: !isMechanic,
+    },
+    {
+      label: "Fornecedores",
+      href: "/dashboard/suppliers",
+      icon: Truck,
       show: !isMechanic,
     },
     {
