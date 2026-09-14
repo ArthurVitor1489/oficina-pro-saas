@@ -5,6 +5,8 @@ import { customers } from "../src/db/schema/customers";
 import { vehicles } from "../src/db/schema/vehicles";
 import { products } from "../src/db/schema/products";
 import { stockMovements } from "../src/db/schema/stock_movements";
+import { quotes, quoteItems } from "../src/db/schema/quotes";
+import { workOrders, workOrderItems } from "../src/db/schema/work_orders";
 import { auditLogs } from "../src/db/schema/audit_logs";
 import { eq, and } from "drizzle-orm";
 import { verifyPassword } from "../src/lib/server/crypto";
@@ -251,6 +253,169 @@ async function runIsolationTest() {
   assert(
     silvaProductCheck.length === 0,
     "ISOLAMENTO FASE 3: Produto criado na Empresa 1 NUNCA aparece na Empresa 2"
+  );
+
+  // 11. FASE 4: Criação de Orçamento com itens
+  const testQuoteId = "quote-teste-" + Date.now();
+  await db.insert(quotes).values({
+    id: testQuoteId,
+    companyId: autocenter.id,
+    quoteNumber: 101,
+    customerId: autocenterCustomers[0].id,
+    status: "APPROVED",
+    subtotalCents: 20000,
+    discountCents: 2000,
+    totalCents: 18000,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+
+  await db.insert(quoteItems).values({
+    id: "q-item-" + Date.now(),
+    companyId: autocenter.id,
+    quoteId: testQuoteId,
+    type: "SERVICE",
+    description: "Revisão Geral e Alinhamento",
+    quantity: 1,
+    unitPriceCents: 20000,
+    discountCents: 2000,
+    totalCents: 18000,
+  });
+
+  const savedQuote = (
+    await db.select().from(quotes).where(eq(quotes.id, testQuoteId))
+  )[0];
+  assert(savedQuote.totalCents === 18000, "FASE 4: Orçamento criado com total de R$ 180,00");
+
+  // 12. FASE 4: Conversão de Orçamento em Ordem de Serviço (OS)
+  const convertedWoId = "wo-converted-" + Date.now();
+  await db.insert(workOrders).values({
+    id: convertedWoId,
+    companyId: autocenter.id,
+    orderNumber: 201,
+    customerId: savedQuote.customerId,
+    status: "APPROVED",
+    fromQuoteId: testQuoteId,
+    subtotalCents: savedQuote.subtotalCents,
+    discountCents: savedQuote.discountCents,
+    totalCents: savedQuote.totalCents,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+
+  // Copiar itens
+  await db.insert(workOrderItems).values({
+    id: "wo-item-" + Date.now(),
+    companyId: autocenter.id,
+    workOrderId: convertedWoId,
+    type: "SERVICE",
+    description: "Revisão Geral e Alinhamento",
+    quantity: 1,
+    unitPriceCents: 20000,
+    discountCents: 2000,
+    totalCents: 18000,
+  });
+
+  // Atualizar orçamento para CONVERTED
+  await db
+    .update(quotes)
+    .set({ status: "CONVERTED", convertedToWorkOrderId: convertedWoId })
+    .where(eq(quotes.id, testQuoteId));
+
+  const updatedQuoteStatus = (
+    await db.select().from(quotes).where(eq(quotes.id, testQuoteId))
+  )[0];
+  assert(
+    updatedQuoteStatus.status === "CONVERTED" &&
+      updatedQuoteStatus.convertedToWorkOrderId === convertedWoId,
+    "FASE 4 - REGRA DE NEGÓCIO: Orçamento convertido em OS com status CONVERTED e vínculo registrado"
+  );
+
+  const createdWo = (
+    await db.select().from(workOrders).where(eq(workOrders.id, convertedWoId))
+  )[0];
+  assert(
+    createdWo.fromQuoteId === testQuoteId && createdWo.totalCents === 18000,
+    "FASE 4: Ordem de Serviço criada corretamente a partir do orçamento aprovado"
+  );
+
+  // 13. FASE 4: Transição de Status pelo Mecânico (Início do Serviço)
+  await db
+    .update(workOrders)
+    .set({ status: "IN_PROGRESS", startedAt: new Date() })
+    .where(eq(workOrders.id, convertedWoId));
+
+  const woInProgress = (
+    await db.select().from(workOrders).where(eq(workOrders.id, convertedWoId))
+  )[0];
+  assert(
+    woInProgress.status === "IN_PROGRESS" && !!woInProgress.startedAt,
+    "FASE 4: Mecânico colocou OS em IN_PROGRESS com timestamp startedAt preenchido"
+  );
+
+  // 14. FASE 4: Aplicação de Peça na OS com Baixa Automática de Estoque
+  const stockBeforeWo = (
+    await db.select().from(products).where(eq(products.id, testProductId))
+  )[0].stockQuantity;
+
+  const partQtyUsed = 2;
+  await db
+    .update(products)
+    .set({ stockQuantity: stockBeforeWo - partQtyUsed })
+    .where(eq(products.id, testProductId));
+
+  await db.insert(stockMovements).values({
+    id: "mov-wo-" + Date.now(),
+    companyId: autocenter.id,
+    productId: testProductId,
+    type: "WORK_ORDER",
+    quantity: -partQtyUsed,
+    referenceType: "WORK_ORDER",
+    referenceId: convertedWoId,
+    userId: mechanicUser.id,
+    notes: "Peça aplicada na OS #201",
+    createdAt: new Date(),
+  });
+
+  const stockAfterWo = (
+    await db.select().from(products).where(eq(products.id, testProductId))
+  )[0].stockQuantity;
+  assert(
+    stockAfterWo === stockBeforeWo - partQtyUsed,
+    "FASE 4: Saldo da peça reduzido com sucesso no estoque após aplicação na OS"
+  );
+
+  const woMovement = await db
+    .select()
+    .from(stockMovements)
+    .where(
+      and(
+        eq(stockMovements.productId, testProductId),
+        eq(stockMovements.referenceId, convertedWoId)
+      )
+    );
+  assert(
+    woMovement.length === 1 && woMovement[0].type === "WORK_ORDER",
+    "FASE 4: Movimentação de estoque do tipo WORK_ORDER registrada com sucesso"
+  );
+
+  // 15. FASE 4: Isolamento Multi-tenant de Orçamentos e OS
+  const silvaQuotesCheck = await db
+    .select()
+    .from(quotes)
+    .where(and(eq(quotes.id, testQuoteId), eq(quotes.companyId, silva.id)));
+  assert(
+    silvaQuotesCheck.length === 0,
+    "ISOLAMENTO FASE 4: Orçamento da Empresa 1 NUNCA aparece para a Empresa 2"
+  );
+
+  const silvaWoCheck = await db
+    .select()
+    .from(workOrders)
+    .where(and(eq(workOrders.id, convertedWoId), eq(workOrders.companyId, silva.id)));
+  assert(
+    silvaWoCheck.length === 0,
+    "ISOLAMENTO FASE 4: Ordem de Serviço da Empresa 1 NUNCA aparece para a Empresa 2"
   );
 
   console.log("\n================================================");

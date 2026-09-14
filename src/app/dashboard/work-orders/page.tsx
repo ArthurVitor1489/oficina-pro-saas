@@ -1,35 +1,61 @@
 import React from "react";
+import Link from "next/link";
 import { getTenantContext } from "@/lib/server/tenant-context";
 import { db } from "@/db";
 import { workOrders } from "@/db/schema/work_orders";
 import { customers } from "@/db/schema/customers";
 import { vehicles } from "@/db/schema/vehicles";
+import { users } from "@/db/schema/users";
 import { eq, desc } from "drizzle-orm";
-import { Card, CardHeader } from "@/components/ui/Card";
+import { Card } from "@/components/ui/Card";
 import { StatusBadge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
-import { Wrench, PlusCircle, Calendar, User, Car } from "lucide-react";
+import { Wrench, Calendar, User, Car, ArrowRight } from "lucide-react";
+import { WorkOrderModal } from "./work-order-modal";
 
 export default async function WorkOrdersPage() {
-  const { companyId, user } = await getTenantContext();
+  const { companyId } = await getTenantContext();
 
-  const orders = await db
-    .select({
-      id: workOrders.id,
-      orderNumber: workOrders.orderNumber,
-      status: workOrders.status,
-      notes: workOrders.notes,
-      totalCents: workOrders.totalCents,
-      createdAt: workOrders.createdAt,
-      customerName: customers.name,
-      vehiclePlate: vehicles.plate,
-      vehicleModel: vehicles.model,
-    })
-    .from(workOrders)
-    .leftJoin(customers, eq(workOrders.customerId, customers.id))
-    .leftJoin(vehicles, eq(workOrders.vehicleId, vehicles.id))
-    .where(eq(workOrders.companyId, companyId))
-    .orderBy(desc(workOrders.createdAt));
+  const [ordersList, customersList, vehiclesList, techniciansList] = await Promise.all([
+    db
+      .select({
+        id: workOrders.id,
+        orderNumber: workOrders.orderNumber,
+        status: workOrders.status,
+        notes: workOrders.notes,
+        totalCents: workOrders.totalCents,
+        createdAt: workOrders.createdAt,
+        customerName: customers.name,
+        vehiclePlate: vehicles.plate,
+        vehicleModel: vehicles.model,
+        assignedUserName: users.name,
+      })
+      .from(workOrders)
+      .leftJoin(customers, eq(workOrders.customerId, customers.id))
+      .leftJoin(vehicles, eq(workOrders.vehicleId, vehicles.id))
+      .leftJoin(users, eq(workOrders.assignedUserId, users.id))
+      .where(eq(workOrders.companyId, companyId))
+      .orderBy(desc(workOrders.createdAt)),
+
+    db
+      .select({ id: customers.id, name: customers.name })
+      .from(customers)
+      .where(eq(customers.companyId, companyId)),
+
+    db
+      .select({
+        id: vehicles.id,
+        customerId: vehicles.customerId,
+        plate: vehicles.plate,
+        model: vehicles.model,
+      })
+      .from(vehicles)
+      .where(eq(vehicles.companyId, companyId)),
+
+    db
+      .select({ id: users.id, name: users.name, role: users.role })
+      .from(users)
+      .where(eq(users.companyId, companyId)),
+  ]);
 
   return (
     <div className="space-y-6">
@@ -37,71 +63,89 @@ export default async function WorkOrdersPage() {
         <div>
           <h1 className="text-xl sm:text-2xl font-black tracking-tight text-slate-900 flex items-center gap-2">
             <Wrench className="w-6 h-6 text-sky-600" />
-            Ordens de Serviço (OS)
+            Ordens de Serviço ({ordersList.length})
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-            Fluxo operacional, execução de serviços, peças aplicadas e status da oficina.
+            Fluxo operacional do pátio, serviços em execução, peças e entrega ao cliente.
           </p>
         </div>
 
-        <Button
-          variant="primary"
-          size="sm"
-          leftIcon={<PlusCircle className="w-4 h-4" />}
-        >
-          Nova Ordem de Serviço
-        </Button>
+        <WorkOrderModal
+          customers={customersList}
+          vehicles={vehiclesList}
+          technicians={techniciansList}
+        />
       </div>
 
-      {orders.length === 0 ? (
+      {ordersList.length === 0 ? (
         <Card className="text-center py-12">
           <div className="w-16 h-16 rounded-2xl bg-sky-50 text-sky-600 flex items-center justify-center mx-auto mb-3">
             <Wrench className="w-8 h-8" />
           </div>
-          <h3 className="text-base font-bold text-slate-800">Nenhuma OS aberta</h3>
+          <h3 className="text-base font-bold text-slate-800">Nenhuma OS em aberto</h3>
           <p className="text-xs sm:text-sm text-slate-500 max-w-sm mx-auto mt-1 mb-4">
             Abra uma nova Ordem de Serviço ou converta um orçamento aprovado para iniciar os trabalhos no pátio.
           </p>
-          <Button variant="primary" size="sm">
-            Criar Primeira OS
-          </Button>
         </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {orders.map((os) => (
-            <Card key={os.id} className="hover:border-sky-300 transition-colors">
-              <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                <span className="font-bold text-sm text-slate-900">
-                  OS #{String(os.orderNumber).padStart(4, "0")}
-                </span>
-                <StatusBadge status={os.status} />
-              </div>
+          {ordersList.map((os) => (
+            <Card key={os.id} className="hover:border-sky-300 transition-all flex flex-col justify-between group">
+              <div>
+                <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                  <Link
+                    href={`/dashboard/work-orders/${os.id}`}
+                    className="font-bold text-sm text-slate-900 group-hover:text-sky-600 transition-colors"
+                  >
+                    OS #{String(os.orderNumber).padStart(4, "0")}
+                  </Link>
+                  <StatusBadge status={os.status} />
+                </div>
 
-              <div className="mt-3 space-y-1.5 text-xs text-slate-600">
-                <div className="flex items-center gap-2">
-                  <User className="w-3.5 h-3.5 text-slate-400" />
-                  <span className="font-semibold text-slate-800">{os.customerName}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Car className="w-3.5 h-3.5 text-slate-400" />
-                  <span>
-                    {os.vehiclePlate} • {os.vehicleModel}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                  <span>{new Date(os.createdAt).toLocaleDateString("pt-BR")}</span>
+                <div className="mt-3 space-y-1.5 text-xs text-slate-600">
+                  <div className="flex items-center gap-2">
+                    <User className="w-3.5 h-3.5 text-slate-400" />
+                    <span className="font-semibold text-slate-800">{os.customerName}</span>
+                  </div>
+                  {os.vehiclePlate && (
+                    <div className="flex items-center gap-2">
+                      <Car className="w-3.5 h-3.5 text-slate-400" />
+                      <span>
+                        {os.vehiclePlate} • {os.vehicleModel}
+                      </span>
+                    </div>
+                  )}
+                  {os.assignedUserName && (
+                    <div className="flex items-center gap-2 text-slate-500">
+                      <Wrench className="w-3.5 h-3.5 text-sky-500" />
+                      <span>Técnico: {os.assignedUserName}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2 text-slate-400 text-[11px] pt-1">
+                    <Calendar className="w-3.5 h-3.5" />
+                    <span>{new Date(os.createdAt).toLocaleDateString("pt-BR")}</span>
+                  </div>
                 </div>
               </div>
 
               <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between">
-                <span className="text-xs text-slate-500">Valor Total:</span>
-                <span className="text-sm font-black text-slate-900">
-                  {(os.totalCents / 100).toLocaleString("pt-BR", {
-                    style: "currency",
-                    currency: "BRL",
-                  })}
-                </span>
+                <div>
+                  <span className="text-[11px] text-slate-400 block">Total:</span>
+                  <span className="text-sm font-black text-slate-900">
+                    {(os.totalCents / 100).toLocaleString("pt-BR", {
+                      style: "currency",
+                      currency: "BRL",
+                    })}
+                  </span>
+                </div>
+
+                <Link
+                  href={`/dashboard/work-orders/${os.id}`}
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-sky-600 hover:text-sky-700"
+                >
+                  <span>Abrir OS</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
               </div>
             </Card>
           ))}
